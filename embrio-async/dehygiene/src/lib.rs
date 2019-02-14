@@ -1,4 +1,5 @@
 #![feature(async_await)]
+#![recursion_limit = "128"]
 
 extern crate proc_macro;
 
@@ -17,12 +18,29 @@ pub fn await(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             // be immovable in memory, so creating a pinned reference into a
             // generator-local is safe. de-referencing the argument pointer is
             // safe for reasons explained in the embrio-async safety notes.
-            let polled = unsafe {
-                let pin = ::core::pin::Pin::new_unchecked(&mut pinned);
-                ::core::future::Future::poll(pin, #arg.get_waker())
-            };
-            if let ::core::task::Poll::Ready(x) = polled {
-                break x;
+            let waker = unsafe { #arg.get_waker() };
+            if let ::core::option::Option::Some(waker) = waker {
+                let pin = unsafe { ::core::pin::Pin::new_unchecked(&mut pinned) };
+                let polled = ::core::future::Future::poll(pin, waker);
+                if let ::core::task::Poll::Ready(x) = polled {
+                    break x;
+                }
+            }
+            yield ::core::option::Option::None;
+        }
+    })
+    .into()
+}
+
+#[proc_macro]
+pub fn await_input(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    assert_eq!(input.to_string(), "");
+    let arg = Ident::new("_embrio_async_sink_item_argument", Span::call_site());
+    quote!({
+        loop {
+            let item = unsafe { #arg.get_item() };
+            if let ::core::option::Option::Some(item) = item {
+                break item;
             }
             yield ::core::option::Option::None;
         }
@@ -40,8 +58,9 @@ pub fn async_block(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         // guarantees. Our use of it in await! is safe because of reasons
         // probably described in the embrio-async safety notes.
         unsafe {
-            ::embrio_async::make_future(move |#arg| {
-                static move || {
+            ::embrio_async::make_future(|#arg| {
+                static || {
+                    let #arg = #arg;
                     if false { yield ::core::option::Option::None }
                     #input
                 }
@@ -81,8 +100,36 @@ pub fn async_stream_block(
         // guarantees. Our use of it in await! is safe because of reasons
         // probably described in the embrio-async safety notes.
         unsafe {
-            ::embrio_async::make_stream(move |#arg| {
-                static move || {
+            ::embrio_async::make_stream(|#arg| {
+                static || {
+                    let #arg = #arg;
+                    if false { yield ::core::option::Option::None }
+                    #input
+                }
+            })
+        }
+    })
+    .into()
+}
+
+#[proc_macro]
+pub fn async_sink_block(
+    input: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let input: TokenStream = input.into();
+    let lw_arg = Ident::new("_embrio_async_lw_argument", Span::call_site());
+    let item_arg =
+        Ident::new("_embrio_async_sink_item_argument", Span::call_site());
+    quote!({
+        // Safety: We trust users not to come here, see that argument name we
+        // generated above and use that in their code to break our other safety
+        // guarantees. Our use of it in await! is safe because of reasons
+        // probably described in the embrio-async safety notes.
+        unsafe {
+            ::embrio_async::make_sink(|#lw_arg, #item_arg| {
+                static || {
+                    let #lw_arg = #lw_arg;
+                    let #item_arg = #item_arg;
                     if false { yield ::core::option::Option::None }
                     #input
                 }

@@ -41,3 +41,31 @@ fn smoke_stream() {
     };
     ::std::assert_eq!(::futures::executor::block_on(future), 11);
 }
+
+#[test]
+fn smoke_sink() {
+    let future = async {
+        let mut sum = 0;
+        {
+            let slow = async move |i| i;
+            let stream = ::embrio_async::async_stream_block! {
+                yield ::embrio_async::await!(async { slow(5) });
+                yield ::embrio_async::await!(async { slow(6) });
+            };
+            let sink = ::embrio_async::async_sink_block! {
+                loop {
+                    sum += ::embrio_async::await!(::embrio_async::await_input!());
+                }
+            };
+            ::pin_utils::pin_mut!(sink);
+            let stream = ::futures::stream::StreamExt::map(
+                stream,
+                ::core::result::Result::Ok,
+            );
+            ::std::await!(::futures::stream::StreamExt::forward(stream, sink))
+                .unwrap();
+        }
+        sum
+    };
+    ::std::assert_eq!(::futures::executor::block_on(future), 11);
+}
